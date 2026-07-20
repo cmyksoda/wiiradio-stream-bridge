@@ -14,6 +14,8 @@ Modern internet radio often uses HTTPS and audio codecs that WiiRadio cannot und
 - **Persistent across reboots**: Any stream running when the program exits will be stored in a local JSON file
 - **Dockerized and lightweight**: Runs entirely in two containers  
 
+<img src="./demo.gif" alt="Demo GIF" width="800">
+
 ## Prerequisites
 
 - Docker and Docker Compose
@@ -42,7 +44,7 @@ docker compose up --build -d
 
 ## Known Bugs
 
-- Currently, metadata display in WiiRadio is iffy at best. Bitrate consistently shows as 0 kbps, title case is inconsistent, and descriptions are missing.
+- Currently, metadata display in WiiRadio is iffy at best. [Progress will be updated here](https://github.com/cmyksoda/wiiradio-stream-bridge/issues/1)
 
 ## Credits & Acknowledgments
 
