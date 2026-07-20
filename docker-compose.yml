@@ -1,0 +1,25 @@
+services:
+  icecast:
+    image: infiniteproject/icecast:latest
+    container_name: icecast-server
+    environment:
+    - ICECAST_SOURCE_PASSWORD=password
+    - ICECAST_ADMIN_PASSWORD=password
+    - ICECAST_ADMIN_USERNAME=admin
+    - ICECAST_MAX_SOURCES=100
+    ports:
+      - 4000:8000
+    restart: unless-stopped
+
+  webui:
+    build:
+      context: .
+    ports:
+      - 3000:3000
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST_IP={YOUR_LOCAL_IP}
+    restart: unless-stopped

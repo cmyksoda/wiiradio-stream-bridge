@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WiiRadio Proxy</title>
+    <link rel="icon" type="image/x-icon" href="../images/favicon.ico">
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,100;0,300;0,400;0,700;0,900;1,100;1,300;1,400;1,700;1,900&display=swap" rel="stylesheet">
+<body>
+    <div id="content">
+        <img src="images/logo.webp" alt="WiiRadio">
+
+        <h2>New proxy</h2>
+        <div id="new-proxy-form">
+            <label>Name: <input type="text" id="stream-name" placeholder="cool radio"></label>
+            <label>URI: <input type="text" id="stream-uri" placeholder="https://..."></label>
+            <label>Description (optional): <input type="text" id="stream-description" placeholder="genre, vibe, whatever"></label>
+            <button onclick="startStream()">Convert!</button>
+        </div>
+
+        <h2>Active proxies</h2>
+        <div class="activeTable">
+            <table id="active-table">
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>.pls</th>
+                        <th>Remove</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function startStream() {
+            const name = document.getElementById('stream-name').value;
+            const uri = document.getElementById('stream-uri').value;
+            const description = document.getElementById('stream-description').value;
+
+            if (!name || !uri) return alert('Please enter a name and URI');
+
+            await fetch('/api/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, uri, description })
+            });
+
+            document.getElementById('stream-name').value = '';
+            document.getElementById('stream-uri').value = '';
+            document.getElementById('stream-description').value = '';
+            fetchStatus();
+        }
+
+        const iconCache = {};
+        async function loadIcon(name) {
+            if (iconCache[name]) return iconCache[name];
+            const res = await fetch(`images/${name}.svg`);
+            let svgText = await res.text();
+            svgText = svgText.replace(/\swidth="[^"]*"/, '').replace(/\sheight="[^"]*"/, '');
+            iconCache[name] = svgText;
+            return svgText;
+        }
+        const iconsReady = Promise.all(['play', 'pause', 'download', 'remove'].map(loadIcon));
+
+        // toggles a stream between playing and paused
+        async function toggleStream(mount, isPaused) {
+            const endpoint = isPaused ? '/api/resume' : '/api/pause';
+            await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mount })
+            });
+            fetchStatus();
+        }
+
+        async function removeStream(mount) {
+            await fetch('/api/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mount })
+            });
+            fetchStatus();
+        }
+
+        async function fetchStatus() {
+            await iconsReady; // icons only need to load once; cached after that
+
+            const response = await fetch('/api/status');
+            const streams = await response.json();
+            const tbody = document.getElementById('table-body');
+
+            tbody.innerHTML = '';
+
+            if (streams.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5">No active streams</td></tr>';
+                return;
+            }
+
+            streams.forEach(({ mount, name, description, paused }) => {
+                // when playing: default icon is "play" (current state), hover reveals "pause" (the action a click performs)
+                // when paused:  default icon is "pause" (current state), hover reveals "play" (the action a click performs)
+                const defaultIcon = paused ? 'pause' : 'play';
+                const hoverIcon = paused ? 'play' : 'pause';
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>
+                        <button class="icon-btn status-toggle" onclick="toggleStream('${mount}', ${paused})" title="${paused ? 'resume' : 'pause'}" aria-label="${paused ? 'resume' : 'pause'}">
+                            <span class="icon-swap">
+                                <span class="icon-default">${iconCache[defaultIcon]}</span>
+                                <span class="icon-hover">${iconCache[hoverIcon]}</span>
+                            </span>
+                        </button>
+                    </td>
+                    <td>${name}</td>
+                    <td>${description}</td>
+                    <td><a class="icon-btn icon-darken" href="/api/playlist/${mount}" download aria-label="download .pls">${iconCache.download}</a></td>
+                    <td><button class="icon-btn icon-darken" onclick="removeStream('${mount}')" aria-label="remove">${iconCache.remove}</button></td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        fetchStatus();
+        setInterval(fetchStatus, 3000);
+    </script>
+</body>
+</html>
