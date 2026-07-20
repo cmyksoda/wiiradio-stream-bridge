@@ -1,4 +1,4 @@
-# WiiRadio Stream Bridge
+# <img src="./public/images/logo.webp" alt="WiiRadio Stream Bridge Logo" width="400">
 
 WiiRadio is a long-abandoned, yet wonderful, homebrew application for the Nintendo Wii that allows users to listen to internet radio streams.  
 
