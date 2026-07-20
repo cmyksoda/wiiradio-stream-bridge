@@ -48,10 +48,10 @@ docker compose up --build -d
 
 ## Credits & Acknowledgments
 
-Of course, this project wouldn't exist without the work done by Scanff and the rest of the team who've worked on WiiRadio in the past.  
+Of course, this project wouldn't exist without the work done by Scanff, Knarrff, and anyone else who has worked on WiiRadio in the past.  
 Check out their repo [here](https://github.com/scanff/wiiradio).  
 
-Additionally, the background asset used in the WebUI is taken from one of the app's bundled skins, designed by TiMeBoMb. The lightning bolt/radio tower icon was designed by the original team, as well.  
+The lightning bolt/radio tower icon and the background asset used in the WebUI were both designed by TiMeBoMb, another member of the original team.  
 
 CSS code for rendering the active proxies table was taken and modified from [this post](https://forum.obsidian.md/t/custom-css-for-tables-5-new-styles-ready-to-use-in-your-notes/17084) by user DeaconLight on the Obsidian Forums.
 
