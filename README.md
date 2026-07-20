@@ -40,7 +40,9 @@ docker compose up --build -d
 3. Enter a name, your target stream URI, and, optionally, a description.  
 4. Click convert!  
 5. Once the stream starts, click the download icon in the active proxies table to grab the `.pls` file, then place it in the `/data/pls/` folder on your SD card.  
-6. The proxy will serve the transcoded audio continuously over port 4000.  
+6. The proxy will serve the transcoded audio continuously over port 4000.
+
+*Note: The server is coded to only allow 20 concurrent streams to play at any given time, with the last played stream paused when a new stream is added. You **can** change this functionality by modifying the* `const MAX_STREAMS = 20;` *line near the top of* `server.js` *, but this limitation was included simply to help with performance.*  
 
 ## Known Bugs
 
