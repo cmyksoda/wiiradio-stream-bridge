@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
 
   webui:
+    container_name: wiiradio-stream-bridge
     build:
       context: .
     ports:

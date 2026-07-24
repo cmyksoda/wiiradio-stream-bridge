@@ -159,11 +159,16 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/playlist/:mount', (req, res) => {
     const mount = req.params.mount;
+    const stream = activeStreams[mount];
+
+    if (!stream) {
+        return res.status(404).send(`no stream at "${mount}"`);
+    }
 
     const plsContent = `[playlist]
 NumberOfEntries=1
 File1=http://${hostIp}:4000/${mount}
-Title1=${mount}
+Title1=${stream.name}
 Length1=-1
 Version=2`;
 
