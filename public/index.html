@@ -46,16 +46,24 @@
 
             if (!name || !uri) return alert('Please enter a name and URI');
 
-            await fetch('/api/start', {
+            const res = await fetch('/api/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, uri, description })
             });
 
+            if (!res.ok) return alert(await res.text());
+
             document.getElementById('stream-name').value = '';
             document.getElementById('stream-uri').value = '';
             document.getElementById('stream-description').value = '';
             fetchStatus();
+        }
+
+        function esc(value) {
+            return String(value ?? '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
         }
 
         const iconCache = {};
@@ -109,20 +117,24 @@
                 const defaultIcon = paused ? 'pause' : 'play';
                 const hoverIcon = paused ? 'play' : 'pause';
 
+                // wiiradio shows the filename on its main interface, so save the
+                // playlist as the stream name rather than the mountpoint
+                const plsName = `${String(name).replace(/[\\/:*?"<>|]/g, '').trim() || mount}.pls`;
+
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>
-                        <button class="icon-btn status-toggle" onclick="toggleStream('${mount}', ${paused})" title="${paused ? 'resume' : 'pause'}" aria-label="${paused ? 'resume' : 'pause'}">
+                        <button class="icon-btn status-toggle" onclick="toggleStream('${esc(mount)}', ${paused})" title="${paused ? 'resume' : 'pause'}" aria-label="${paused ? 'resume' : 'pause'}">
                             <span class="icon-swap">
                                 <span class="icon-default">${iconCache[defaultIcon]}</span>
                                 <span class="icon-hover">${iconCache[hoverIcon]}</span>
                             </span>
                         </button>
                     </td>
-                    <td>${name}</td>
-                    <td>${description}</td>
-                    <td><a class="icon-btn icon-darken" href="/api/playlist/${mount}" download aria-label="download .pls">${iconCache.download}</a></td>
-                    <td><button class="icon-btn icon-darken" onclick="removeStream('${mount}')" aria-label="remove">${iconCache.remove}</button></td>
+                    <td>${esc(name)}</td>
+                    <td>${esc(description)}</td>
+                    <td><a class="icon-btn icon-darken" href="/api/playlist/${encodeURIComponent(mount)}" download="${esc(plsName)}" aria-label="download .pls">${iconCache.download}</a></td>
+                    <td><button class="icon-btn icon-darken" onclick="removeStream('${esc(mount)}')" aria-label="remove">${iconCache.remove}</button></td>
                 `;
                 tbody.appendChild(row);
             });
