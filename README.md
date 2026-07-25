@@ -46,7 +46,7 @@ docker compose up --build -d
 
 ## Known Bugs
 
-- Currently, metadata display in WiiRadio is iffy at best. [Progress will be updated here](https://github.com/cmyksoda/wiiradio-stream-bridge/issues/1)
+- ~~Currently, metadata display in WiiRadio is iffy at best. [Progress will be updated here](https://github.com/cmyksoda/wiiradio-stream-bridge/issues/1)~~ *fixed! open an issue please if you find any problems I haven't!*
 
 ## Credits & Acknowledgments
 
