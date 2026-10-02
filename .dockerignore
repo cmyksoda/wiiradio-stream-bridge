@@ -1,0 +1,14 @@
+# keep the build context clean so stale/host-only files never get baked into the image
+.git
+.gitignore
+.claude
+.dockerignore
+node_modules
+data
+docker-compose.yml
+docker-compose.override.yml
+Dockerfile
+README.md
+LICENSE
+demo.gif
+*.md

@@ -7,6 +7,24 @@ services:
     - ICECAST_ADMIN_PASSWORD=password
     - ICECAST_ADMIN_USERNAME=admin
     - ICECAST_MAX_SOURCES=100
+    # Icecast's buffer limits are baked into the image's icecast.xml and its
+    # entrypoint only templates the passwords, so they get patched here.
+    # The stock defaults assume listeners on decent connections. A Wii on wifi
+    # stalls for seconds at a time, and once it slips past queue-size Icecast
+    # drops it outright ("has fallen too far behind") - which is what WiiRadio
+    # reports as a failed stream. 2MB is roughly two minutes of slack at 128k.
+    # source-timeout is raised so a brief transcode reconnect doesn't tear the
+    # mountpoint down and take the listener with it.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        sed -i \
+          -e 's|<queue-size>[^<]*</queue-size>|<queue-size>2097152</queue-size>|' \
+          -e 's|<burst-size>[^<]*</burst-size>|<burst-size>131072</burst-size>|' \
+          -e 's|<source-timeout>[^<]*</source-timeout>|<source-timeout>30</source-timeout>|' \
+          /etc/icecast.xml
+        exec icecast -c /etc/icecast.xml
     ports:
       - 4000:8000
     restart: unless-stopped

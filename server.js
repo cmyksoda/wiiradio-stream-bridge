@@ -17,6 +17,19 @@ app.use(express.json());
 const MAX_STREAMS = 20;
 const activeStreams = {};
 
+// Output profiles. 44.1kHz stereo stays fixed because that is what WiiRadio's
+// decoder is proven happy with; only the bitrate moves. Bytes-per-second is
+// what decides whether the Wii can keep up with icecast, so re-encoding a
+// 32k talk stream up to 128k just makes it four times likelier to fall behind.
+const ALLOWED_BITRATES = [32, 48, 64, 96, 128];
+const DEFAULT_BITRATE = 128;
+
+// how long a transcode has to survive before we stop counting its death as
+// part of a failure streak, and the backoff bounds for restarting one
+const HEALTHY_RUN_MS = 60000;
+const RESTART_BASE_MS = 2000;
+const RESTART_MAX_MS = 60000;
+
 // --- icecast connection (must match the icecast container's credentials) ---
 const ICECAST_HOST = 'icecast-server';
 const ICECAST_PORT = 8000;
@@ -49,11 +62,14 @@ function pauseLRUStream() {
     const lruMount = getLRUStream();
     if (lruMount) {
         const stream = activeStreams[lruMount];
+        // set the intent first: the exit handler reads `paused` to tell an
+        // intentional stop from a source that dropped out under us
+        stream.paused = true;
+        cancelRespawn(stream);
         if (stream.process) {
             stream.process.kill();
             stream.process = null;
         }
-        stream.paused = true;
         savestate();
         console.log(`Paused LRU stream: ${lruMount}`);
         return true;
@@ -267,7 +283,66 @@ function startMetadataReader(mount, sourceUri) {
     return reader;
 }
 
-function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc) {
+// snap a bitrate down to the nearest profile we actually offer, so the
+// Ice-Bitrate header we advertise always matches what libmp3lame produced
+function normaliseBitrate(value) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return ALLOWED_BITRATES.filter(b => b <= n).pop() || ALLOWED_BITRATES[0];
+}
+
+// ask the source what it is before we decide what to re-encode it to. one
+// short extra connection, only on the first start of a stream - the answer is
+// persisted, so resumes and reconnects never pay for it again.
+function probeSourceBitrate(uri) {
+    return new Promise((resolve) => {
+        const probe = spawn('ffprobe', [
+            '-v', 'error',
+            '-rw_timeout', '8000000',
+            '-show_entries', 'format=bit_rate:stream=bit_rate',
+            '-of', 'default=nw=1:nk=1',
+            uri
+        ]);
+
+        let out = '';
+        const timer = setTimeout(() => probe.kill('SIGKILL'), 10000);
+
+        probe.stdout.on('data', (d) => { out += d; });
+        probe.on('error', () => { clearTimeout(timer); resolve(null); });
+        probe.on('close', () => {
+            clearTimeout(timer);
+            // format and stream bitrates are both printed; take the larger,
+            // either may be missing (N/A) on a live stream
+            const kbps = out.split('\n')
+                .map(line => parseInt(line, 10))
+                .filter(n => Number.isFinite(n) && n > 0)
+                .map(n => Math.round(n / 1000))
+                .sort((a, b) => b - a)[0];
+            resolve(kbps || null);
+        });
+    });
+}
+
+// Re-encoding is lossy on top of already-lossy input, and we resample up to
+// 44.1kHz stereo besides, so matching the source bitrate exactly would sound
+// worse than the source does. Half again gives the encoder enough headroom for
+// the loss to stay inaudible while still being far cheaper than a flat 128k:
+// a 32k talk stream becomes 48k, i.e. a third of the bytes the Wii used to
+// have to keep up with. Sources at 96k and up are unaffected.
+const BITRATE_HEADROOM = 1.5;
+const MIN_AUTO_BITRATE = 48;
+
+async function resolveBitrate(uri, requested) {
+    if (requested && requested !== 'auto') {
+        return normaliseBitrate(requested) || DEFAULT_BITRATE;
+    }
+    const probed = await probeSourceBitrate(uri);
+    if (!probed) return DEFAULT_BITRATE;   // unreadable source: keep the old behaviour
+    const target = Math.min(probed * BITRATE_HEADROOM, DEFAULT_BITRATE);
+    return Math.max(normaliseBitrate(target) || MIN_AUTO_BITRATE, MIN_AUTO_BITRATE);
+}
+
+function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc, bitrate) {
     const auth = Buffer.from(`${ICECAST_SOURCE_USER}:${ICECAST_SOURCE_PASS}`).toString('base64');
     const sock = net.connect(ICECAST_PORT, ICECAST_HOST);
     let handshakeDone = false;
@@ -287,8 +362,8 @@ function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc) {
             // fills WiiRadio's $GENRE menu line (it reads no ID3 text tags)
             `Ice-Genre: ${plsSafe(streamDesc)}`,
             // make Icecast advertise icy-br
-            `Ice-Audio-Info: bitrate=128;samplerate=44100;channels=2`,
-            `Ice-Bitrate: 128`,
+            `Ice-Audio-Info: bitrate=${bitrate};samplerate=44100;channels=2`,
+            `Ice-Bitrate: ${bitrate}`,
             `Expect: 100-continue`,
             '', ''
         ].join('\r\n');
@@ -306,7 +381,7 @@ function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc) {
         if (code === 100 || code === 200) {
             handshakeDone = true;
             ffmpegProcess.stdout.pipe(sock);   // stream transcoded audio to icecast
-            console.log(`[${mount}] icecast source connected (128k)`);
+            console.log(`[${mount}] icecast source connected (${bitrate}k)`);
             setNowPlaying(mount, streamDesc);
         } else {
             handshakeDone = true;
@@ -322,11 +397,53 @@ function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc) {
     });
 }
 
-function spawnFfmpeg(sourceUri, mount, streamName, streamDesc) {
+// A transcode that ends unexpectedly takes its mountpoint with it, and a
+// missing mountpoint is exactly what WiiRadio reports as "fail" - so bring it
+// back rather than leaving a paused stream for someone to notice by hand.
+// Backs off 2s, 4s, 8s ... up to a minute, and never gives up: a station that
+// is down for an hour should still come back on its own.
+function scheduleRespawn(mount) {
+    const stream = activeStreams[mount];
+    if (!stream || stream.paused || stream.restartTimer) return;
+
+    const attempt = stream.restarts = (stream.restarts || 0) + 1;
+    const delay = Math.min(RESTART_BASE_MS * 2 ** (attempt - 1), RESTART_MAX_MS);
+    console.log(`[${mount}] transcode died; reconnecting in ${delay / 1000}s (attempt ${attempt})`);
+
+    stream.restartTimer = setTimeout(() => {
+        stream.restartTimer = null;
+        // a pause/stop/resume may have overtaken us while we waited
+        if (activeStreams[mount] !== stream || stream.paused || stream.process) return;
+        stream.process = spawnFfmpeg(stream.uri, mount, stream.name, stream.description, stream.bitrate);
+    }, delay);
+}
+
+function cancelRespawn(stream) {
+    if (stream && stream.restartTimer) {
+        clearTimeout(stream.restartTimer);
+        stream.restartTimer = null;
+    }
+}
+
+function spawnFfmpeg(sourceUri, mount, streamName, streamDesc, bitrate) {
+    const rate = normaliseBitrate(bitrate) || DEFAULT_BITRATE;
     const args = [
+        '-hide_banner',
+        '-nostdin',
+        '-nostats',                          // the progress line spammed docker logs
+        // Internet radio servers drop connections as a matter of routine. Without
+        // these, one blip ends ffmpeg, ends the mountpoint, and the Wii fails;
+        // with them ffmpeg re-opens the source itself and the mountpoint - and
+        // whatever the Wii is currently playing - survives untouched.
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_on_network_error', '1',
+        '-reconnect_delay_max', '10',
+        '-rw_timeout', '15000000',           // 15s without a byte means the socket is dead
+        '-user_agent', 'wiiradio-stream-bridge',
         '-i', sourceUri,
         '-c:a', 'libmp3lame',
-        '-b:a', '128k',
+        '-b:a', `${rate}k`,
         '-ar', '44100',
         '-ac', '2',
         '-map_metadata', '0',   // try to carry over track title tags
@@ -336,11 +453,12 @@ function spawnFfmpeg(sourceUri, mount, streamName, streamDesc) {
     ];
 
     const ffmpegProcess = spawn('ffmpeg', args);
+    const startedAt = Date.now();
 
     // fresh mountpoint, so forget any previously-pushed title: the description
     // push below must not be deduped away, nor a stale song title kept
     clearNowPlaying(mount);
-    connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc);
+    connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc, rate);
     ffmpegProcess._metaReader = startMetadataReader(mount, sourceUri);
 
     ffmpegProcess.stderr.on('data', (data) => {
@@ -359,13 +477,17 @@ function spawnFfmpeg(sourceUri, mount, streamName, streamDesc) {
             ffmpegProcess._metaReader.stop();
         }
 
-        // if ffmpeg died on its own (not via an intentional pause/stop),
-        // mark the stream as paused instead of leaving a dead process
-        // reference around, so the UI still shows a resumable stream.
         const stream = activeStreams[mount];
         if (stream && stream.process === ffmpegProcess) {
             stream.process = null;
-            stream.paused = true;
+            // `paused` is set before the kill on every intentional stop, so an
+            // exit while it is still false means the source went away on us
+            if (!stream.paused) {
+                // a long healthy run before this means it isn't a failure
+                // streak, so the next attempt starts from the short delay again
+                if (Date.now() - startedAt > HEALTHY_RUN_MS) stream.restarts = 0;
+                scheduleRespawn(mount);
+            }
         }
     });
 
@@ -407,6 +529,7 @@ function savestate() {
             uri: stream.uri,
             name: stream.name,
             description: stream.description,
+            bitrate: stream.bitrate,
             paused: stream.paused,
             lastPlayedAt: stream.lastPlayedAt
         };
@@ -417,7 +540,6 @@ function savestate() {
         fs.mkdirSync(path.dirname(dataFile), { recursive: true });
     }
 
-    // use the asynchronous promise-based write
     fs.promises.writeFile(dataFile, JSON.stringify(statetosave, null, 2))
         .catch(err => console.error('failed to save state:', err));
 }
@@ -427,21 +549,26 @@ function loadstate() {
         try {
             const data = JSON.parse(fs.readFileSync(dataFile));
             for (const [mount, s] of Object.entries(data)) {
-                let process = null;
+                // streams saved before bitrates were persisted keep the old fixed rate
+                const bitrate = normaliseBitrate(s.bitrate) || DEFAULT_BITRATE;
 
-                // if it was running before the crash/restart, start it back up
-                if (!s.paused) {
-                    process = spawnFfmpeg(s.uri, mount, s.name, s.description);
-                }
-
+                // the record has to exist first: the transcode's exit handler
+                // looks itself up in activeStreams to decide about restarting
                 activeStreams[mount] = {
-                    process,
+                    process: null,
                     uri: s.uri,
                     name: s.name,
                     description: s.description,
+                    bitrate,
                     paused: s.paused,
                     lastPlayedAt: s.lastPlayedAt || Date.now()
                 };
+
+                // if it was running before the crash/restart, start it back up
+                if (!s.paused) {
+                    activeStreams[mount].process =
+                        spawnFfmpeg(s.uri, mount, s.name, s.description, bitrate);
+                }
             }
             console.log(`restored ${Object.keys(data).length} streams from memory`);
         } catch (err) {
@@ -457,6 +584,7 @@ app.get('/api/status', (req, res) => {
         mount,
         name: s.name,
         description: s.description,
+        bitrate: s.bitrate,
         paused: s.paused
     }));
     res.json(streams);
@@ -469,6 +597,12 @@ app.get('/api/playlist/:mount', (req, res) => {
     if (!stream) {
         return res.status(404).send(`no stream at "${mount}"`);
     }
+
+    // The only moment the bridge hears from the Wii, so it is the best signal
+    // available for "recently wanted". Without this lastPlayedAt never moved
+    // after a stream started, and the LRU pause would evict by start time -
+    // meaning a long-running favourite got dropped ahead of an idle one.
+    updateLastPlayed(mount);
 
     const title = plsSafe(stream.name) || mount;
 
@@ -492,8 +626,8 @@ Version=2`;
     res.send(plsContent);
 });
 
-app.post('/api/start', (req, res) => {
-    const { uri, name, description } = req.body;
+app.post('/api/start', async (req, res) => {
+    const { uri, name, description, bitrate } = req.body;
 
     if (!name || !uri) {
         return res.status(400).send('name and uri are required');
@@ -518,16 +652,21 @@ app.post('/api/start', (req, res) => {
     }
 
     const streamDesc = description && description.trim() ? description.trim() : 'converted radio stream';
-    const process = spawnFfmpeg(uri, mount, name, streamDesc);
+    // resolved once and remembered, so resumes and auto-reconnects never re-probe
+    const rate = await resolveBitrate(uri, bitrate);
 
-    activeStreams[mount] = {
-        process,
+    // record first, then spawn: the transcode's exit handler looks itself up
+    // in activeStreams to decide whether to reconnect
+    const stream = activeStreams[mount] = {
+        process: null,
         uri,
         name,
         description: streamDesc,
+        bitrate: rate,
         paused: false,
         lastPlayedAt: Date.now()
     };
+    stream.process = spawnFfmpeg(uri, mount, name, streamDesc, rate);
     savestate();
     res.send(`started playing at http://${hostIp}:4000/${mount}`);
 });
@@ -544,10 +683,13 @@ app.post('/api/pause', (req, res) => {
     }
 
     // killing ffmpeg drops its connection to icecast, which stops the
-    // broadcast for this mountpoint immediately
-    stream.process.kill();
-    stream.process = null;
+    // broadcast for this mountpoint immediately. `paused` goes first so the
+    // exit handler doesn't mistake this for the source dropping out.
     stream.paused = true;
+    cancelRespawn(stream);
+    // there may be no process right now: it can be between auto-reconnects
+    if (stream.process) stream.process.kill();
+    stream.process = null;
     savestate();
     res.send(`paused ${mount}`);
 });
@@ -572,10 +714,12 @@ app.post('/api/resume', (req, res) => {
         }
     }
 
-    stream.process = spawnFfmpeg(stream.uri, mount, stream.name, stream.description);
+    cancelRespawn(stream);
+    stream.restarts = 0;   // a deliberate resume is a clean slate
     stream.paused = false;
+    stream.process = spawnFfmpeg(stream.uri, mount, stream.name, stream.description, stream.bitrate);
     stream.lastPlayedAt = Date.now();
-    savestate(); // (or your updated promise-based save)
+    savestate();
     res.send(`resumed ${mount}`);
 });
 
@@ -587,6 +731,8 @@ app.post('/api/stop', (req, res) => {
         return res.send('stream was not running');
     }
 
+    stream.paused = true;   // stops the exit handler from reconnecting it
+    cancelRespawn(stream);
     if (stream.process) {
         stream.process.kill();
     }
