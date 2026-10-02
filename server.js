@@ -23,6 +23,8 @@ const activeStreams = {};
 // 32k talk stream up to 128k just makes it four times likelier to fall behind.
 const ALLOWED_BITRATES = [32, 48, 64, 96, 128];
 const DEFAULT_BITRATE = 128;
+const SAMPLE_RATE = 44100;
+const CHANNELS = 2;
 
 // how long a transcode has to survive before we stop counting its death as
 // part of a failure streak, and the backoff bounds for restarting one
@@ -33,6 +35,8 @@ const RESTART_MAX_MS = 60000;
 // --- icecast connection (must match the icecast container's credentials) ---
 const ICECAST_HOST = 'icecast-server';
 const ICECAST_PORT = 8000;
+// the host side of docker-compose's 4000:8000 mapping, which is where the Wii connects
+const ICECAST_PUBLIC_PORT = 4000;
 const ICECAST_SOURCE_USER = 'source';
 // VVV EDIT THE ICECAST PASSWORD HERE VVV
 const ICECAST_SOURCE_PASS = 'password';
@@ -48,7 +52,6 @@ function getLRUStream() {
     let lruTime = Infinity;
     
     for (const [mount, stream] of Object.entries(activeStreams)) {
-        // only consider actively playing streams
         if (!stream.paused && stream.lastPlayedAt < lruTime) {
             lruTime = stream.lastPlayedAt;
             lruMount = mount;
@@ -161,7 +164,11 @@ function startMetadataReader(mount, sourceUri) {
         if (reader.stopped) return;
 
         let u;
-        try { u = new URL(uri); } catch { return giveUp('unparseable source uri'); }
+        try {
+            u = new URL(uri);
+        } catch {
+            return giveUp('unparseable source uri');
+        }
         if (u.protocol !== 'http:' && u.protocol !== 'https:') {
             return giveUp(`${u.protocol}// source`);
         }
@@ -219,7 +226,11 @@ function startMetadataReader(mount, sourceUri) {
                     sock.destroy();
                     if (redirects >= 5) return giveUp('too many redirects');
                     let next;
-                    try { next = new URL(location.trim(), uri).href; } catch { return giveUp('bad redirect'); }
+                    try {
+                        next = new URL(location.trim(), uri).href;
+                    } catch {
+                        return giveUp('bad redirect');
+                    }
                     return connect(next, redirects + 1);
                 }
                 if (code !== 200) {
@@ -362,7 +373,7 @@ function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc, bitr
             // fills WiiRadio's $GENRE menu line (it reads no ID3 text tags)
             `Ice-Genre: ${plsSafe(streamDesc)}`,
             // make Icecast advertise icy-br
-            `Ice-Audio-Info: bitrate=${bitrate};samplerate=44100;channels=2`,
+            `Ice-Audio-Info: bitrate=${bitrate};samplerate=${SAMPLE_RATE};channels=${CHANNELS}`,
             `Ice-Bitrate: ${bitrate}`,
             `Expect: 100-continue`,
             '', ''
@@ -380,7 +391,7 @@ function connectIcecastSource(ffmpegProcess, mount, streamName, streamDesc, bitr
 
         if (code === 100 || code === 200) {
             handshakeDone = true;
-            ffmpegProcess.stdout.pipe(sock);   // stream transcoded audio to icecast
+            ffmpegProcess.stdout.pipe(sock);
             console.log(`[${mount}] icecast source connected (${bitrate}k)`);
             setNowPlaying(mount, streamDesc);
         } else {
@@ -414,7 +425,8 @@ function scheduleRespawn(mount) {
         stream.restartTimer = null;
         // a pause/stop/resume may have overtaken us while we waited
         if (activeStreams[mount] !== stream || stream.paused || stream.process) return;
-        stream.process = spawnFfmpeg(stream.uri, mount, stream.name, stream.description, stream.bitrate);
+        stream.process =
+            spawnFfmpeg(stream.uri, mount, stream.name, stream.description, stream.bitrate);
     }, delay);
 }
 
@@ -444,8 +456,8 @@ function spawnFfmpeg(sourceUri, mount, streamName, streamDesc, bitrate) {
         '-i', sourceUri,
         '-c:a', 'libmp3lame',
         '-b:a', `${rate}k`,
-        '-ar', '44100',
-        '-ac', '2',
+        '-ar', `${SAMPLE_RATE}`,
+        '-ac', `${CHANNELS}`,
         '-map_metadata', '0',   // try to carry over track title tags
         '-id3v2_version', '3',
         '-f', 'mp3',
@@ -535,7 +547,6 @@ function savestate() {
         };
     }
 
-    // create the data folder if it doesn't exist yet
     if (!fs.existsSync(path.dirname(dataFile))) {
         fs.mkdirSync(path.dirname(dataFile), { recursive: true });
     }
@@ -564,7 +575,6 @@ function loadstate() {
                     lastPlayedAt: s.lastPlayedAt || Date.now()
                 };
 
-                // if it was running before the crash/restart, start it back up
                 if (!s.paused) {
                     activeStreams[mount].process =
                         spawnFfmpeg(s.uri, mount, s.name, s.description, bitrate);
@@ -608,7 +618,7 @@ app.get('/api/playlist/:mount', (req, res) => {
 
     const plsContent = `[playlist]
 NumberOfEntries=1
-File1=http://${hostIp}:4000/${mount}
+File1=http://${hostIp}:${ICECAST_PUBLIC_PORT}/${mount}
 Title1=${title}
 Length1=-1
 Version=2`;
@@ -651,7 +661,9 @@ app.post('/api/start', async (req, res) => {
         }
     }
 
-    const streamDesc = description && description.trim() ? description.trim() : 'converted radio stream';
+    const streamDesc = description && description.trim()
+        ? description.trim()
+        : 'converted radio stream';
     // resolved once and remembered, so resumes and auto-reconnects never re-probe
     const rate = await resolveBitrate(uri, bitrate);
 
@@ -668,7 +680,7 @@ app.post('/api/start', async (req, res) => {
     };
     stream.process = spawnFfmpeg(uri, mount, name, streamDesc, rate);
     savestate();
-    res.send(`started playing at http://${hostIp}:4000/${mount}`);
+    res.send(`started playing at http://${hostIp}:${ICECAST_PUBLIC_PORT}/${mount}`);
 });
 
 app.post('/api/pause', (req, res) => {
@@ -705,7 +717,6 @@ app.post('/api/resume', (req, res) => {
         return res.send(`${mount} is already playing`);
     }
 
-    // check active transcodes to enforce the limit when resuming
     const activeCount = Object.values(activeStreams).filter(s => !s.paused).length;
     
     if (activeCount >= MAX_STREAMS) {
@@ -717,7 +728,8 @@ app.post('/api/resume', (req, res) => {
     cancelRespawn(stream);
     stream.restarts = 0;   // a deliberate resume is a clean slate
     stream.paused = false;
-    stream.process = spawnFfmpeg(stream.uri, mount, stream.name, stream.description, stream.bitrate);
+    stream.process =
+        spawnFfmpeg(stream.uri, mount, stream.name, stream.description, stream.bitrate);
     stream.lastPlayedAt = Date.now();
     savestate();
     res.send(`resumed ${mount}`);
@@ -746,7 +758,6 @@ app.get('/', (req, res) => {
     res.send('wiiradio proxy is running!');
 });
 
-// load memory
 loadstate();
 
 app.listen(port, () => {
