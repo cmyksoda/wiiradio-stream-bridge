@@ -66,18 +66,21 @@ halving doubles how long the Wii can stall before Icecast gives up on it.
 
 - ~~Currently, metadata display in WiiRadio is iffy at best. [Progress will be updated here](https://github.com/cmyksoda/wiiradio-stream-bridge/issues/1)~~ *fixed! open an issue please if you find any problems I haven't!*
 
-## Credits & Acknowledgments
+## Credits
 
-Of course, this project wouldn't exist without the work done by Scanff, Knarrff, and anyone else who has worked on WiiRadio in the past.  
-Check out their repo [here](https://github.com/scanff/wiiradio).  
+- **WiiRadio** by Scanff, Knarrff, and everyone else who has worked on it, without whom this project wouldn't exist ([scanff/wiiradio](https://github.com/scanff/wiiradio))
+- The lightning bolt/radio tower icon and the WebUI background, designed by TiMeBoMb of the original WiiRadio team
+- The CSS for the active proxies table, taken and modified from [this post](https://forum.obsidian.md/t/custom-css-for-tables-5-new-styles-ready-to-use-in-your-notes/17084) by DeaconLight on the Obsidian Forums
+- **Wii Sans** by [NotSoArtisty on DeviantArt](https://www.deviantart.com/notsoartisty/art/Wii-Sans-v2-824335667), used in the lower half of the logo
+- **Recommended Radio Streams** by Deroverda ([recommended-radio-streams](https://github.com/deroverda/recommended-radio-streams)), a great collection of curated internet radio streams that I highly recommend
+- **FFmpeg** by the FFmpeg developers, with the LAME encoder (`libmp3lame`), for transcoding streams to MP3
+- **Icecast** by the Xiph.Org Foundation, for broadcasting the streams, run from the [infiniteproject/icecast](https://hub.docker.com/r/infiniteproject/icecast) Docker image
+- **Express** by TJ Holowaychuk and contributors, for the web server
+- **Lato** by Łukasz Dziedzic, the typeface of the WebUI, loaded from Google Fonts
 
-The lightning bolt/radio tower icon and the background asset used in the WebUI were both designed by TiMeBoMb, another member of the original team.  
+## License
 
-CSS code for rendering the active proxies table was taken and modified from [this post](https://forum.obsidian.md/t/custom-css-for-tables-5-new-styles-ready-to-use-in-your-notes/17084) by user DeaconLight on the Obsidian Forums.
-
-Wii Sans font, used in the lower half of the logo, is by [NotSoArtisty on DeviantArt.](https://www.deviantart.com/notsoartisty/art/Wii-Sans-v2-824335667)  
-
-Finally, I highly recommend checking out [Deroverda's Recommended Radio Streams](https://github.com/deroverda/recommended-radio-streams) for a great collection of curated internet radio streams.
+WiiRadio Stream Bridge is free software under the [GNU General Public License, version 3](LICENSE).
 
 ---
 
