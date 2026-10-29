@@ -80,7 +80,7 @@ halving doubles how long the Wii can stall before Icecast gives up on it.
 
 ## License
 
-WiiRadio Stream Bridge is free software under the [GNU General Public License, version 3](LICENSE).
+All parts of this repository that are my work are licensed under the [GNU General Public License, version 3 or later](LICENSE).
 
 ---
 
